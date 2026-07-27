@@ -4,10 +4,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import fetch_datasets
 from fetch_datasets import (
+    DEFAULT_TIMEOUT,
     build_ground_truth,
     conflicting_targets,
+    download,
     label_rows,
+    parse_args,
     split_records,
     target_ids,
     write_corpus,
@@ -108,3 +112,36 @@ def test_corpus_files_are_written_per_target(tmp_path):
     assert "let x = a - b;" in (tmp_path / "corpus" / files[0]).read_text() or "let x = a - b;" in (
         tmp_path / "corpus" / files[1]
     ).read_text()
+
+
+def test_download_passes_a_socket_timeout(tmp_path, monkeypatch):
+    """A stalled HF endpoint must fail fast instead of hanging the release gate."""
+
+    class FakeResponse:
+        def read(self):
+            return b"payload"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    seen = {}
+
+    def fake_urlopen(url, timeout=None):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(fetch_datasets.urllib.request, "urlopen", fake_urlopen)
+    dest = download("owner/name", "abc123", "data/train.parquet", tmp_path / "raw" / "train.parquet")
+
+    assert seen["timeout"] == DEFAULT_TIMEOUT
+    assert seen["url"] == "https://huggingface.co/datasets/owner/name/resolve/abc123/data/train.parquet"
+    assert dest.read_bytes() == b"payload"
+
+
+def test_timeout_is_overridable_from_the_cli():
+    assert parse_args([]).timeout == DEFAULT_TIMEOUT
+    assert parse_args(["--timeout", "5"]).timeout == 5.0

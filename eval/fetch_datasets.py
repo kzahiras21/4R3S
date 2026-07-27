@@ -26,6 +26,9 @@ import pandas as pd
 
 HF_RESOLVE = "https://huggingface.co/datasets/{dataset}/resolve/{revision}/{path}"
 DEFAULT_PARQUET = "data/train-00000-of-00001.parquet"
+# Without this, a stalled HF endpoint blocks the release gate until the runner
+# times out. The parquet is ~150 KB, so a minute of silence means trouble.
+DEFAULT_TIMEOUT = 60.0
 CODE_BLOCK = re.compile(r"```(.*?)```", re.DOTALL)
 VERDICT = re.compile(r"classified as (?P<label>.+?) and is related to the code:\s*`(?P<location>.*?)`", re.DOTALL)
 SWC = re.compile(r"SWC it is mapped with:\s*(?P<swc>[A-Za-z0-9\-]+)")
@@ -41,10 +44,10 @@ UNSUPPORTED = {
 }
 
 
-def download(dataset: str, revision: str, path: str, dest: Path) -> Path:
+def download(dataset: str, revision: str, path: str, dest: Path, timeout: float = DEFAULT_TIMEOUT) -> Path:
     url = HF_RESOLVE.format(dataset=dataset, revision=revision, path=path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url) as response, dest.open("wb") as handle:
+    with urllib.request.urlopen(url, timeout=timeout) as response, dest.open("wb") as handle:
         handle.write(response.read())
     return dest
 
@@ -144,6 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=Path("eval/data"), help="where to write outputs")
     parser.add_argument("--parquet-path", default=DEFAULT_PARQUET, help="path of the parquet inside the HF repo")
     parser.add_argument("--local-parquet", type=Path, help="use an already-downloaded parquet instead of fetching")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="socket timeout for the download, seconds")
     parser.add_argument("--list-unsupported", action="store_true", help="print the datasets this script cannot ingest")
     return parser.parse_args(argv)
 
@@ -160,7 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     parquet = args.local_parquet or download(
-        dataset, revision, args.parquet_path, args.out_dir / "raw" / Path(args.parquet_path).name
+        dataset,
+        revision,
+        args.parquet_path,
+        args.out_dir / "raw" / Path(args.parquet_path).name,
+        timeout=args.timeout,
     )
     frame = pd.read_parquet(parquet)
     if "text" not in frame.columns:
